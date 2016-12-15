@@ -1,0 +1,400 @@
+<?php
+require_once('Client.php');
+require_once('File.php');
+/**
+ * @file
+ * A block module that displays Behance posts.
+ */
+
+ /**
+ * Implements hook_help().
+ *
+ * Displays help and module information.
+ *
+ * @param path 
+ *   Which path of the site we're using to display help
+ * @param arg 
+ *   Array that holds the current path as returned from arg() function
+ */
+function mc_behance_help($path, $arg) {
+	switch ($path) {
+	    case "admin/help#mc_behance":
+	      return '' . t("Displays links to nodes created on this date") . '';
+	      break;
+	}
+}
+/**
+ * Implements hook_menu().
+ */
+function mc_behance_menu() {
+  $items = array();
+
+  $items['admin/config/content/mc_behance'] = array(
+    'title' => 'MC Behance',
+    'description' => 'Configuration for MC Behance module',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('mc_behance_form'),
+    'access arguments' => array('access administration pages'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  return $items;
+}
+/**
+ * Page callback: mc behance global settings
+ *
+ * @see mc_behance_menu()
+ */
+function mc_behance_form($form, &$form_state) {
+  $form['mc_behance_ApiKey'] = array(
+    '#type' => 'textfield',
+    '#title' => t('API KEY / CLIENT ID'),
+    '#default_value' => variable_get('mc_behance_ApiKey', ''),
+    '#size' => 100,
+    '#maxlength' => 100,
+    '#description' => t('Use this link to aquired <a href="https://www.behance.net/dev/apps" target="_blank">https://www.behance.net/dev/apps</a>'),
+    '#required' => TRUE,
+  );
+   $form['mc_behance_blocks_no'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Number of Drupal Blocks to be generated'),
+    '#default_value' => variable_get('mc_behance_blocks_no', '1'),
+    '#size' => 2,
+    '#maxlength' => 2,
+    '#description' => t('Use numeric values only'),
+    '#number_type' => 'integer',
+    '#required' => TRUE,
+    '#element_validate' => array('element_validate_integer_positive'),
+  );
+  $form['mc_behance_cache'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Cache In Seconds'),
+    '#default_value' => variable_get('mc_behance_cache', '3600'),
+    '#size' => 25,
+    '#maxlength' => 25,
+    '#description' => t('Use numeric values only'),
+    '#number_type' => 'integer',
+    '#required' => TRUE,
+    '#element_validate' => array('element_validate_integer_positive'),
+  );
+  $form['mc_behance_cache_storage'] = array(
+    '#type' => 'radios',
+    '#title' => t('Cache files storage location'),
+    '#default_value' => variable_get('mc_behance_cache_storage', 'public'),
+    '#size' => 2,
+    '#description' => t('Drupal storage locations'),
+    '#required' => TRUE,
+    '#options' => array("public" => t("Public"),"private" => t("Private")),
+  );
+
+  return system_settings_form($form);
+}
+function mc_behance_form_validate($form, &$form_state) {
+  //Clean Up old Blocks
+  $old_blocks_no =  variable_get('mc_behance_blocks_no');
+  $new_blocks_no =  $form_state['values']['mc_behance_blocks_no'];
+  if ($new_blocks_no < $old_blocks_no){
+    while ( $old_blocks_no > $new_blocks_no){
+		$block = 'mc_behance_blk_'.$old_blocks_no;
+    	//Database Clean Up
+    	db_delete('block')
+		  ->condition('module', 'mc_behance')
+		  ->condition('delta', $block)
+		  ->execute();
+		//File Clean Up
+		$fileIO = new Behance\FileIO($block, 'private');
+		$fileIO -> delete();
+		$fileIO = new Behance\FileIO($block, 'public');
+		$fileIO -> delete();
+		
+		$old_blocks_no--;
+    }
+  }
+}
+/**
+ * Implements hook_block_info().
+ */
+function mc_behance_block_info() {
+  $length = variable_get('mc_behance_blocks_no', 1);
+  for($i=1;$i<=$length;$i++){
+	  $blocks['mc_behance_blk_'.$i] = array(
+	    // The name that will appear in the block list.
+	    'info' => t('MC Behance Block No. ' . $i),
+	    // Default setting.
+	    'cache' => DRUPAL_CACHE_PER_ROLE,
+	  );
+  }
+
+  return $blocks;
+}
+/**
+ * Custom content function. 
+ * 
+ * Set beginning and end dates, retrieve posts from database
+ * saved in that time period.
+ * 
+ * @return 
+ *   A result set of the targeted posts.
+ */
+function mc_behance_contents($delta = ''){
+  $clientID = variable_get('mc_behance_ApiKey');
+  $cacheTimeInSeconds = variable_get('mc_behance_cache', '4200');
+  $cachStorageLocation = variable_get('mc_behance_cache_storage');
+  
+  $client = new Behance\Client( $clientID );
+  //Set Custom variables
+  $ID = variable_get($delta.'_target');
+  $Type = variable_get($delta.'_type');
+  if(!empty(variable_get($delta.'_cache'))){
+  	$cacheTimeInSeconds = variable_get($delta.'_cache');
+  }
+  //File & Cache Operation
+  $fileIO = new Behance\FileIO($delta, $cachStorageLocation);
+  echo '-- >' . $delta . '->'. $Type .'->' . $ID ; //Debug line'
+  
+  //Get the Number of Pages
+  $pages = variable_get($delta.'_pages',1);
+  $sortby = variable_get($delta.'_sort');
+ 
+  switch ($Type){
+  	case 'getUserProjects':
+	//Is It Cached
+		if(!$fileIO -> cached($cacheTimeInSeconds)){
+		  	echo ' | Fresh -- >';
+		  	
+		  	//get first page
+			$query = $client->getUserProjects( $ID , ['page' => 1, 'sort' => $sortby]);
+			
+			//get the other pages
+			$i = 2;
+			while($i <= $pages){
+				$temp =  $client->getUserProjects( $ID , ['page' => $i, 'sort' => $sortby]);
+				if(count($temp)>0)
+				{
+					$query = array_merge($query, $temp);
+				}
+				else{
+					break;
+				}
+				$i++;
+			}
+			if(count($query) > 1)
+			{
+				$fileIO -> write($query);
+			}
+		}
+		break; //Done getUserProjects
+	case 'getCollectionProjects':
+	//Is It Cached
+		if(!$fileIO -> cached($cacheTimeInSeconds)){
+		  	echo 'Fresh -- >';
+		 
+		  	//get first page
+			$query = $client->getCollectionProjects( $ID , ['page' => 1, 'sort' => $sortby]);
+			
+			//get the other pages
+			$i = 2;
+			while($i <= $pages){
+				$temp =  $client->getCollectionProjects( $ID , ['page' => $i, 'sort' => $sortby]);
+				if(count($temp)>0)
+				{
+					$query = array_merge($query, $temp);
+				}
+				else{
+					break;
+				}
+				$i++;
+			}
+			if(count($query) > 1)
+			{
+				$fileIO -> write($query);
+			}
+		}
+		break; //Done getCollectionProjects
+   }
+      
+  //Read Data from file & Return
+  $query = $fileIO -> read();
+  return $query;
+}
+/**
+ * Implements hook_block_view().
+ * 
+ * Prepares the contents of the block.
+ */
+function mc_behance_block_view($delta = '') {
+      $block['subject'] = t('MC Behance Data');
+      if (user_access('access content')) {
+        // Use our custom function to retrieve data.
+        $result = mc_behance_contents($delta);
+        // Array to contain items for the block to render.
+        $items = array();
+        
+        // Iterate over the resultset and format as links.
+		$Type = variable_get($delta.'_type');
+		$Theme = variable_get($delta.'_template','item_list');
+		
+		switch ($Theme){
+			case 'item_list':
+				 switch ($Type){
+			  		case 'getUserProjects':
+			  		case 'getCollectionProjects':
+				        foreach ($result as $node) {
+				          $items[] = array(
+				            'data' => l(
+				            	$node->name, 
+				            	$node->url
+							),
+				          ); 
+				        }
+						break;
+				}
+				// No content
+		        if (empty($items)) {
+		          $block['content'] = t('No posts available.');  
+		        } 
+		        else {
+		          // Pass data through theme function.
+		          $block['content'] = theme($Theme, array(
+		            'items' => $items));
+		        }
+				break; //End of item_List
+			case 'behance_cards':
+				switch ($Type){
+			  		case 'getUserProjects':
+			  		case 'getCollectionProjects':    
+					     // Pass data through theme function.
+		          			$block['content'] = mc_behance_customTheme($result,$delta);
+					break;
+		        }
+				break;
+							
+		}
+    }
+    return $block;
+}
+function mc_behance_block_configure($delta = '') {
+	$form = array();
+	$form[$delta.'_type'] = array(
+	    '#type' => 'radios',
+	    '#title' => t('Target Type'),
+	    '#default_value' => variable_get($delta.'_type', 'getUserProjects'),
+	    '#description' => t('to access User, Project, Work in Progress and Collection data'),
+	    '#required' => TRUE,
+	    '#options' => array(//"getUserAppreciations" => t("Retrieves a list of projects that ID or Username has appreciated"),
+	    					"getUserProjects" => t("Retrieves a list of User projects"),    					
+	    					//"userWips" => t("User's work in progress"),
+	    					//"getProject" => t("Retrieves a full Project, by ID"),	
+	    					//"getCollection" => t("Retrieves a collection, by ID"),
+	    					"getCollectionProjects" => t("Retrieves a list of Collection projects"),
+	    					//"getUserCollections" => t("Retrieves a list of ID or username's collections"),
+		),
+	);
+	$form[$delta.'_target'] = array(
+	    '#type' => 'textfield',
+	    '#title' => t('Behance Targeted ID or User'),
+	    '#default_value' => variable_get($delta.'_target'),
+	    '#size' => 100,
+	    '#maxlength' => 100,
+	    '#description' => t('Your target for the Type'),
+	    '#required' => TRUE,
+	);
+	$form[$delta.'_pages'] = array(
+	    '#type' => 'textfield',
+	    '#title' => t('Number of Pages to get'),
+	    '#default_value' => variable_get($delta.'_pages',1),
+	    '#size' => 3,
+	    '#maxlength' => 3,
+	    '#description' => t('*<em>It will stop once an empty page retrieved, for all go for 999</em><br/><em>Supported by :</em> User Projects, Collection Projects'),
+	    '#required' => TRUE,
+	    '#number_type' => 'integer',
+		'#element_validate' => array('element_validate_integer_positive'),
+	);
+	$form[$delta.'_sort'] = array(
+	    '#type' => 'select',
+	    '#title' => t('Sort by'),
+	    '#default_value' => variable_get($delta.'_sort', 'featured_date'),
+	    '#size' => 1,
+	    '#description' => t('The order the results are returned in.'),
+	    '#required' => TRUE,
+	    '#options' => array("featured_date" => t("Featured Date"),
+	    					"appreciations" => t("Appreciations"),    					
+	    					"views" => t("Views"),
+	    					"comments" => t("Comments"),	
+	    					"published_date" => t("Published Date"),
+	    					"followed" => t("Followed"),
+		),
+	);
+	$form[$delta.'_cache'] = array(
+	    '#type' => 'textfield',
+	    '#title' => t('Override Global Cache In Seconds'),
+	    '#default_value' => variable_get($delta.'_cache', ''),
+	    '#size' => 25,
+	    '#maxlength' => 25,
+	    '#description' => t('Empty for default value'),
+	    '#number_type' => 'integer',
+	    '#required' => FALSE,
+	    '#element_validate' => array('element_validate_integer_positive'),
+	  );
+	$form[$delta.'_template'] = array(
+	    '#type' => 'select',
+	    '#title' => t('Template'),
+	    '#default_value' => variable_get($delta.'_template', 'item_list'),
+	    '#size' => 1,
+	    '#description' => t('The order the results are returned in.'),
+	    '#required' => TRUE,
+	    '#options' => array("item_list" => t("Item List"),
+	    					"behance_cards" => t("Custom Card Theme similar to Behance"),
+		),
+	);
+	return $form;
+}
+/**
+ * Implements hook_block_save().
+ *
+ * This hook declares how the configured options for a block
+ * provided by this module are saved.
+ */
+function mc_behance_block_save($delta = '', $edit = array()) {
+  variable_set($delta.'_target', $edit[$delta.'_target']);
+  variable_set($delta.'_type', $edit[$delta.'_type']);
+  variable_set($delta.'_pages', $edit[$delta.'_pages']);
+  variable_set($delta.'_sort', $edit[$delta.'_sort']);
+  variable_set($delta.'_cache', $edit[$delta.'_cache']);
+  variable_set($delta.'_template', $edit[$delta.'_template']);
+  $fileIO = new Behance\FileIO($delta, 'private');
+  $fileIO -> delete();
+  $fileIO = new Behance\FileIO($delta, 'public');
+  $fileIO -> delete();
+}
+/**
+ * Custom Theming function
+ *
+ * ----------------
+ */
+function mc_behance_customTheme($result, $ID = '',$Theme = ''){
+	$toReturn ="";
+	switch ($Theme){
+		case 'js_object':
+			$toReturn .='<script"> var '. $ID . '_data = [';
+			foreach ($result as $project){
+					$toReturn .= '{"name":"'.$project->name .'},' ;
+				}
+			$toReturn .='{}]</script>';
+			break;
+		case 'behance_cards':
+			$toReturn .='<div id="'.$ID.'-container" class="content-column js-gallery-content"><ul class="content-list js-content-list">';
+			if(empty($result)){
+				$toReturn .= '<h1>No Record found</h1>';
+			}
+			else{
+				foreach ($result as $project){
+					$toReturn .= '<li>' . $project->name . '</li>' ;
+				}
+			}
+			$toReturn .='</ul></div>';
+			break; // behance_cards
+	}
+	
+	return $toReturn; 
+}

@@ -1,0 +1,6 @@
+name = MC Behance
+description = A description of what your module does
+core = 7.x
+package = My Modules
+; NEW LINE
+configure = admin/config/content/mc_behance
